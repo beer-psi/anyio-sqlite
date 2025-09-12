@@ -1,5 +1,10 @@
 # anyio-sqlite
 
+[![Python versions](https://img.shields.io/pypi/pyversions/anyio-sqlite.svg)](https://pypi.org/project/anyio-sqlite)
+[![PyPI release](https://img.shields.io/pypi/v/anyio-sqlite.svg)](https://pypi.org/project/anyio-sqlite)
+[![License](https://img.shields.io/pypi/l/anyio-sqlite.svg)](https://github.com/beer-psi/anyio-sqlite/tree/trunk?tab=readme-ov-file#license)
+
+
 `anyio-sqlite` is an AnyIO bridge to the standard `sqlite3` database module, providing
 async versions of all connection, cursor and blob (Python 3.11+) methods that runs
 on both [asyncio](https://docs.python.org/3/library/asyncio.html) and [Trio](https://github.com/python-trio/trio).
