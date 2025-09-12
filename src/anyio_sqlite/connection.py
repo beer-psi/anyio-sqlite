@@ -546,7 +546,7 @@ if sys.version_info >= (3, 12):
         factory: type[SyncConnectionT] = sqlite3.Connection,
         cached_statements: int = 128,
         uri: bool = False,
-        autocommit: bool | Literal[-1] = sqlite3.LEGACY_TRANSACTION_CONTROL,
+        autocommit: bool = sqlite3.LEGACY_TRANSACTION_CONTROL,  # pyright: ignore[reportArgumentType]
         iter_chunk_size: int = 64,
     ) -> Connection[SyncConnectionT]:
         def connector():
