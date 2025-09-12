@@ -1,4 +1,3 @@
-# pyright: reportPrivateUsage=false
 import sqlite3
 from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Generic, Optional, TypeVar, Union
