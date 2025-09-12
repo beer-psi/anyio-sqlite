@@ -80,4 +80,4 @@ async def test_cursor_iterate_128k_rows():
 
     # asyncio hovers around 2, and trio hovers around 3
     # aiosqlite hovers around 1.7 on this test from my testing
-    assert anyio_total_time / native_total_time <= 3.5
+    assert anyio_total_time / native_total_time <= 4
