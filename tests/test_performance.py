@@ -1,4 +1,5 @@
 import contextlib
+import os
 import sqlite3
 import string
 import time
@@ -10,6 +11,7 @@ import anyio_sqlite
 pytestmark = pytest.mark.anyio
 
 
+@pytest.mark.skipif(os.environ.get("CI") is not None, reason="too slow")
 async def test_cursor_iterate_128k_rows():
     async with await anyio_sqlite.connect(":memory:") as conn:
         await conn.executescript("""
@@ -80,4 +82,4 @@ async def test_cursor_iterate_128k_rows():
 
     # asyncio hovers around 2, and trio hovers around 3
     # aiosqlite hovers around 1.7 on this test from my testing
-    assert anyio_total_time / native_total_time <= 4
+    assert anyio_total_time / native_total_time <= 3.5
