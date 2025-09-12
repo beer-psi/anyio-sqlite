@@ -96,19 +96,19 @@ requires = ["tox>=4.19", "tox-uv>=1.28"]
 env_list = ["3.14t", "3.14", "3.13", "3.12", "3.11", "3.10", "3.9", "type", "lint"]
 
 [tool.tox.env_run_base]
-runner = "uv-venv-lock-runner"
+# runner = "uv-venv-lock-runner"
 description = "run tests with pytest under {env_name}"
 dependency_groups = ["test"]
 commands = [["pytest"]]
 
 [tool.tox.env.type]
-runner = "uv-venv-lock-runner"
+# runner = "uv-venv-lock-runner"
 description = "run type check on code base"
 deps = ["basedpyright==1.31.4"]
 commands = [["basedpyright", "src/anyio_sqlite"], ["basedpyright", "tests"]]
 
 [tool.tox.env.lint]
-runner = "uv-venv-lock-runner"
+# runner = "uv-venv-lock-runner"
 description = "run lint on code base"
 deps = ["ruff==0.13.0"]
 skip_install = true
