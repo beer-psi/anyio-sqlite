@@ -63,7 +63,7 @@ async def main():
     await con.commit()
     await cur.aclose()
 
-    cur = await con.execute("SELECT score FROM movie") as cur:
+    cur = await con.execute("SELECT score FROM movie")
 
     async for row in cur:
         ...
