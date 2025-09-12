@@ -1,0 +1,124 @@
+[project]
+name = "anyio-sqlite"
+version = "0.1.0"
+authors = [
+    { name = "beerpsi", email = "beerpsi@duck.com" }
+]
+description = "anyio bridge to the standard sqlite3 module"
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: AnyIO",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries",
+]
+license = "Apache-2.0 OR MIT"
+license-files = ["LICEN[CS]E*"]
+dependencies = [
+    "aioresult>=1.2",
+    "anyio>=4.10.0",
+    "outcome>=1.3.0.post0",
+    "typing-extensions>=4.15.0",
+]
+
+[project.urls]
+github = "https://github.com/beer-psi/anyio-sqlite"
+issues = "https://github.com/beer-psi/anyio-sqlite/issues"
+funding = "https://ko-fi.com/beerpsi_"
+
+[build-system]
+requires = ["uv_build>=0.8.15,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "basedpyright==1.31.4",
+    "ruff==0.13.0",
+    "trio>=0.31.0",
+]
+test = [
+    "pytest>=8.4.2",
+    "tox>=4.30.2",
+    "tox-uv>=1.28.0",
+    "trio>=0.31.0",
+]
+
+[tool.ruff]
+respect-gitignore = true
+
+[tool.ruff.lint]
+select = [
+    "ASYNC",
+    "B",
+    "BLE",
+    "C4",
+    "DTZ",
+    "E",
+    "EM",
+    "F",
+    "FLY",
+    "I",
+    "ISC",
+    "Q",
+    "PERF",
+    "PGH",
+    "PIE",
+    "PTH",
+    "RET",
+    "RSE",
+    "RUF",
+    "SIM",
+    "TRY",
+    "TID252",
+    "W",
+]
+unfixable = ["B"]
+
+[tool.ruff.lint.pycodestyle]
+ignore-overlong-task-comments = true
+
+[tool.ruff.lint.flake8-builtins]
+builtins-ignorelist = ["id"]
+
+[tool.basedpyright]
+typeCheckingMode = "strict"
+
+[tool.tox]
+requires = ["tox>=4.19", "tox-uv>=1.28"]
+env_list = ["3.14t", "3.14", "3.13", "3.12", "3.11", "3.10", "3.9", "type", "lint"]
+
+[tool.tox.env_run_base]
+runner = "uv-venv-lock-runner"
+description = "run tests with pytest under {env_name}"
+dependency_groups = ["test"]
+commands = [["pytest"]]
+
+[tool.tox.env.type]
+runner = "uv-venv-lock-runner"
+description = "run type check on code base"
+deps = ["basedpyright==1.31.4"]
+commands = [["basedpyright", "src/anyio_sqlite"], ["basedpyright", "tests"]]
+
+[tool.tox.env.lint]
+runner = "uv-venv-lock-runner"
+description = "run lint on code base"
+deps = ["ruff==0.13.0"]
+skip_install = true
+commands = [["ruff", "check", "."]]
+
+[tool.tox.gh.python]
+"3.14t" = ["3.14t"]
+"3.14" = ["3.14"]
+"3.13" = ["3.13"]
+"3.12" = ["3.12"]
+"3.11" = ["3.11"]
+"3.10" = ["3.10"]
+"3.9" = ["3.9", "type", "lint"]
