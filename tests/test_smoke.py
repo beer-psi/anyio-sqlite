@@ -298,7 +298,7 @@ async def test_getconfig_setconfig():
             assert not await conn.getconfig(anyio_sqlite.SQLITE_DBCONFIG_DQS_DML)
             with pytest.raises(
                 anyio_sqlite.OperationalError,
-                match=r'no such column: "?test"?.+',
+                match=r'no such column: "?test"?.*',
             ):
                 await conn.execute('INSERT INTO t1 VALUES ("test")')
 

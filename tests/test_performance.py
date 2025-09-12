@@ -11,7 +11,7 @@ import anyio_sqlite
 pytestmark = pytest.mark.anyio
 
 
-@pytest.mark.skipif(os.environ.get("CI") is not None, reason="too slow")
+@pytest.mark.skipif(os.environ.get("GITHUB_ACTIONS") is not None, reason="too slow")
 async def test_cursor_iterate_128k_rows():
     async with await anyio_sqlite.connect(":memory:") as conn:
         await conn.executescript("""
