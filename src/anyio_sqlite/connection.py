@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import warnings
 from collections.abc import (
+    AsyncGenerator,
     AsyncIterator,
     Callable,
     Iterable,
@@ -743,7 +744,7 @@ if sys.version_info >= (3, 12):
         uri: bool = False,
         autocommit: bool = sqlite3.LEGACY_TRANSACTION_CONTROL,  # pyright: ignore[reportArgumentType]
         iter_chunk_size: int = 128,
-    ):
+    ) -> AsyncGenerator[Connection[_SyncConnectionT], Any]:
         """
         Opens an asynchronous SQLite connection.
 
@@ -799,7 +800,7 @@ else:
         cached_statements: int = 128,
         uri: bool = False,
         iter_chunk_size: int = 128,
-    ):
+    ) -> AsyncGenerator[Connection[_SyncConnectionT], Any]:
         """
         Opens an asynchronous SQLite connection.
 
