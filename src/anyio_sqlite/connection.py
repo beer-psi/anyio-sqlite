@@ -172,7 +172,7 @@ class Connection(Generic[SyncConnectionT]):
     async def _stop_running(self):
         self._closed = True
 
-        self._tx.put_nowait(StopRunning(anyio.lowlevel.current_token()))
+        self._tx.put_nowait(StopRunning())
         await self._iterdump_send.aclose()
         await self._iterdump_recv.aclose()
 
@@ -561,6 +561,10 @@ class Connection(Generic[SyncConnectionT]):
             ResourceWarning,
             stacklevel=1,
         )
+
+        # even if the event loop is not alive, at least signal the worker thread to shut
+        # down gracefully
+        self._tx.put_nowait(StopRunning())
 
         # see if we can close it for the user, e.g. if garbage collected while the loop
         # is still alive

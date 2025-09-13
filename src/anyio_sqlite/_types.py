@@ -22,5 +22,4 @@ class WindowAggregateClass(Protocol):
 
 
 class StopRunning:
-    def __init__(self, token: object):
-        self.token = token
+    pass
