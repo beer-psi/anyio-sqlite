@@ -470,7 +470,7 @@ async def test_warn_when_dangling_connection():
     with pytest.warns(ResourceWarning, match=".*was deleted before being closed.*"):
         async with anyio.create_task_group() as tg:
             conn = await anyio_sqlite.Connection.connect(tg, ":memory:")
-            conn.__del__()
+            del conn
 
 
 async def test_do_not_warn_when_properly_closed():
@@ -479,4 +479,4 @@ async def test_do_not_warn_when_properly_closed():
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        conn.__del__()
+        del conn

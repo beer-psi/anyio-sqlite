@@ -11,6 +11,7 @@ from collections.abc import (
     Callable,
     Iterable,
     Mapping,
+    MutableSequence,
     Sequence,
 )
 from contextlib import asynccontextmanager
@@ -80,6 +81,39 @@ def _safe_set_exception(future: Future[_T], exception: BaseException):
         future.set_exception(exception)
 
 
+def _worker_thread(
+    tx: SimpleQueue[Union[tuple[object, Future[Any], Callable[[], Any]], StopRunning]],
+    connection_register: MutableSequence[Optional[_SyncConnectionT]],
+):
+    while True:
+        request = tx.get()
+
+        if isinstance(request, StopRunning):
+            if connection_register[0] is not None:
+                connection_register[0].close()
+                connection_register[0] = None
+            break
+
+        token, future, fn = request
+
+        if isinstance(token, asyncio.AbstractEventLoop):
+            run_sync_soon_from_thread = token.call_soon_threadsafe
+        elif (run_sync_soon := getattr(token, "run_sync_soon", None)) is not None:
+            run_sync_soon_from_thread = run_sync_soon
+        else:
+            run_sync_soon_from_thread = anyio.from_thread.run_sync
+
+        try:
+            try:
+                result = fn()
+            except BaseException as e:  # noqa: BLE001
+                run_sync_soon_from_thread(_safe_set_exception, future, e)
+            else:
+                run_sync_soon_from_thread(_safe_set_result, future, result)
+        except RuntimeError:  # the event loop got closed
+            break
+
+
 class Connection(Generic[_SyncConnectionT]):
     """
     An asynchronous :class:`sqlite3.Connection` proxy.
@@ -114,7 +148,7 @@ class Connection(Generic[_SyncConnectionT]):
         self._connected: bool = False
         self._closed: bool = False
 
-        self._connection: Optional[_SyncConnectionT] = None
+        self._connection_register: list[Optional[_SyncConnectionT]] = [None]
         self._connector = connector
 
         self._tg = task_group
@@ -238,40 +272,11 @@ class Connection(Generic[_SyncConnectionT]):
         if there are none.
         """
 
-        if self._connection is None:
+        if self._connection_register[0] is None:
             msg = "no active connections"
             raise sqlite3.ProgrammingError(msg)
 
-        return self._connection
-
-    def _worker_thread(self):
-        while True:
-            request = self._tx.get()
-
-            if isinstance(request, StopRunning):
-                if self._connection is not None:
-                    self._connection.close()
-                    self._connection = None
-                break
-
-            token, future, fn = request
-
-            if isinstance(token, asyncio.AbstractEventLoop):
-                run_sync_soon_from_thread = token.call_soon_threadsafe
-            elif (run_sync_soon := getattr(token, "run_sync_soon", None)) is not None:
-                run_sync_soon_from_thread = run_sync_soon
-            else:
-                run_sync_soon_from_thread = anyio.from_thread.run_sync
-
-            try:
-                try:
-                    result = fn()
-                except BaseException as e:  # noqa: BLE001
-                    run_sync_soon_from_thread(_safe_set_exception, future, e)
-                else:
-                    run_sync_soon_from_thread(_safe_set_result, future, result)
-            except RuntimeError:  # the event loop got closed
-                break
+        return self._connection_register[0]
 
     # Lifecycle management
 
@@ -316,11 +321,16 @@ class Connection(Generic[_SyncConnectionT]):
         if self._connected:
             return self
 
-        self._tg.start_soon(anyio.to_thread.run_sync, self._worker_thread)
+        self._tg.start_soon(
+            anyio.to_thread.run_sync,
+            _worker_thread,
+            self._tx,
+            self._connection_register,
+        )
 
-        if self._connection is None:
+        if self._connection_register[0] is None:
             try:
-                self._connection = await self._to_thread(self._connector)
+                self._connection_register[0] = await self._to_thread(self._connector)
             except BaseException:
                 await self._stop_running()
                 raise
@@ -337,7 +347,7 @@ class Connection(Generic[_SyncConnectionT]):
     async def aclose(self):
         """Closes the connection."""
 
-        if self._connection is None or self._closed:
+        if self._connection_register[0] is None or self._closed:
             return
 
         await self._stop_running()
@@ -711,7 +721,7 @@ class Connection(Generic[_SyncConnectionT]):
         return self.connection.total_changes
 
     def __del__(self):
-        if self._connection is None or self._closed:
+        if self._connection_register[0] is None or self._closed:
             return
 
         warnings.warn(
