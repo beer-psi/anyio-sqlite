@@ -28,6 +28,7 @@ from sqlite3 import (
     sqlite_version_info,
 )
 
+from ._exceptions import AnyIOSQLiteInternalError
 from .connection import Connection, connect
 from .cursor import Cursor
 
@@ -191,6 +192,7 @@ __all__ = [
     "SQLITE_DENY",
     "SQLITE_IGNORE",
     "SQLITE_OK",
+    "AnyIOSQLiteInternalError",
     "Connection",
     "Cursor",
     "DataError",

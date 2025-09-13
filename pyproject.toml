@@ -1,6 +1,6 @@
 [project]
 name = "anyio-sqlite"
-version = "0.1.1"
+version = "0.2.0"
 authors = [
     { name = "beerpsi", email = "beerpsi@duck.com" }
 ]
@@ -24,9 +24,9 @@ classifiers = [
 license = "Apache-2.0 OR MIT"
 license-files = ["LICEN[CS]E*"]
 dependencies = [
-    "aioresult>=1.2",
-    "anyio>=4.10.0",
-    "typing-extensions>=4.15.0",
+    "aioresult~=1.1",
+    "anyio>=4,<4.11",  # 4.11 changes the AnyIO token type, after that comes out we'll need anyio~=4.11
+    "typing-extensions~=4.0",
 ]
 
 [project.urls]

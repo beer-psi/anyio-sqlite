@@ -32,7 +32,7 @@ wheels = [
 
 [[package]]
 name = "anyio-sqlite"
-version = "0.1.1"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "aioresult" },
@@ -55,9 +55,9 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aioresult", specifier = ">=1.2" },
-    { name = "anyio", specifier = ">=4.10.0" },
-    { name = "typing-extensions", specifier = ">=4.15.0" },
+    { name = "aioresult", specifier = "~=1.1" },
+    { name = "anyio", specifier = ">=4,<4.11" },
+    { name = "typing-extensions", specifier = "~=4.0" },
 ]
 
 [package.metadata.requires-dev]

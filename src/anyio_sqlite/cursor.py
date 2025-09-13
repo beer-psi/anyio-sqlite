@@ -14,13 +14,34 @@ SyncCursorT = TypeVar("SyncCursorT", bound=sqlite3.Cursor)
 
 
 class Cursor(Generic[SyncConnectionT, SyncCursorT]):
+    """
+    An asynchronous :class:`sqlite3.Cursor` proxy. Supports the asynchronous context
+    management protocol and the asynchronous iteration protocol.
+    """
+
+    iter_chunk_size: int
+    """
+    Control how many rows are fetched into memory at a time when using the cursor
+    as an asynchronous iterator. The default set by :attr:`Connection.iter_chunk_size`
+    is 128, which provides a good balance between performance and memory usage.
+    """
+
     def __init__(
         self,
         connection: "Connection[SyncConnectionT]",
         cursor: "SyncCursorT",
     ) -> None:
+        """
+        Creates a new instance.
+
+        :param connection: The asynchronous connection proxy that this cursor
+            belongs to.
+        :param cursor: The underlying :mod:`sqlite3` cursor.
+        """
+
         self._connection = connection
         self._cursor = cursor
+
         self.iter_chunk_size = connection.iter_chunk_size
 
     async def __aenter__(self) -> "Self":
@@ -95,8 +116,8 @@ class Cursor(Generic[SyncConnectionT, SyncCursorT]):
     @property
     def connection(self) -> "Connection[SyncConnectionT]":
         """
-        Read-only attribute that provides the database connection belonging to
-        the cursor.
+        Read-only attribute that provides the asynchronous connection proxy that this
+        cursor belongs to.
         """
         return self._connection
 

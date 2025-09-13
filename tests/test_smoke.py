@@ -13,20 +13,24 @@ pytestmark = pytest.mark.anyio
 
 
 async def test_connection_open_and_close():
-    conn = await anyio_sqlite.connect(":memory:")
+    async with anyio.create_task_group() as tg:
+        conn = await anyio_sqlite.Connection.connect(tg, ":memory:")
 
-    assert isinstance(conn, anyio_sqlite.Connection)
-    await conn.aclose()
+        assert isinstance(conn, anyio_sqlite.Connection)
+        await conn.aclose()
 
 
 async def test_connection_context_manager():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         assert isinstance(conn, anyio_sqlite.Connection)
 
 
 async def test_connect_error():
-    with pytest.raises(anyio_sqlite.OperationalError, match="unable to open database"):
-        _ = await anyio_sqlite.connect("/something/that/shouldnt/exist.db")
+    with pytest.raises(
+        anyio_sqlite.OperationalError, match=r"unable to open database.*"
+    ):
+        async with anyio_sqlite.connect("/something/that/shouldnt/exist.db") as _:
+            pass
 
 
 async def test_connection_properly_closes_on_error():
@@ -34,17 +38,18 @@ async def test_connection_properly_closes_on_error():
         msg = "hehe"
         raise BaseException(msg)  # noqa: TRY002
 
-    connection = anyio_sqlite.Connection(bad_connector, 64)
+    async with anyio.create_task_group() as tg:
+        connection = anyio_sqlite.Connection(tg, bad_connector, 64)
 
-    with pytest.raises(BaseException, match="hehe"):
-        async with await connection:
-            pass
+        with pytest.raises(BaseException, match="hehe"):
+            async with connection:
+                pass
 
-    assert not connection._connected  # pyright: ignore[reportPrivateUsage]
+        assert not connection._connected
 
 
 async def test_closed_connection():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         pass
 
     with pytest.raises(anyio_sqlite.ProgrammingError, match="no active connections"):
@@ -52,21 +57,22 @@ async def test_closed_connection():
 
 
 async def test_close_twice():
-    conn = await anyio_sqlite.connect(":memory:")
+    async with anyio.create_task_group() as tg:
+        conn = await anyio_sqlite.Connection.connect(tg, ":memory:")
 
-    await conn.aclose()
-    await conn.aclose()
+        await conn.aclose()
+        await conn.aclose()
 
 
 async def test_multiple_connections(tmp_path: Path):
     db_path = tmp_path / "test.sqlite3"
 
-    async with await anyio_sqlite.connect(db_path) as conn:
+    async with anyio_sqlite.connect(db_path) as conn:
         await conn.executescript("CREATE TABLE t1(i INTEGER NOT NULL)")
 
     async def do_one_conn(i: int):
         async with (
-            await anyio_sqlite.connect(db_path) as conn,
+            anyio_sqlite.connect(db_path) as conn,
             await conn.execute("INSERT INTO t1 VALUES(?) RETURNING i", (i,)) as cursor,
         ):
             row = await cursor.fetchone()
@@ -80,7 +86,7 @@ async def test_multiple_connections(tmp_path: Path):
             tg.start_soon(do_one_conn, i)
 
     async with (
-        await anyio_sqlite.connect(db_path) as conn,
+        anyio_sqlite.connect(db_path) as conn,
         await conn.execute("SELECT COUNT(*) FROM t1") as cursor,
     ):
         row = await cursor.fetchone()
@@ -90,7 +96,7 @@ async def test_multiple_connections(tmp_path: Path):
 
 
 async def test_multiple_queries():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.executescript("CREATE TABLE t1(i INTEGER NOT NULL)")
 
         async with anyio.create_task_group() as tg:
@@ -107,7 +113,7 @@ async def test_multiple_queries():
 
 
 async def test_iterable_cursor():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.executescript("CREATE TABLE t1(i INTEGER NOT NULL)")
         await conn.executemany("INSERT INTO t1 VALUES (?)", [(i,) for i in range(10)])
         await conn.commit()
@@ -122,7 +128,7 @@ async def test_iterable_cursor():
 
 
 async def test_cursor_returns_self():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         cursor = await conn.cursor()
         cursor2 = await cursor.execute("SELECT 1")
 
@@ -130,7 +136,7 @@ async def test_cursor_returns_self():
 
 
 async def test_create_function():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.create_function("fn", 1, lambda x: 42)  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
 
         async with await conn.execute("SELECT fn(1)") as cursor:
@@ -145,7 +151,7 @@ async def test_create_function():
 
 
 async def test_create_function_deterministic():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.create_function("fn", 1, lambda x: 42, deterministic=True)  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
 
         async with await conn.execute("SELECT fn(1)") as cursor:
@@ -166,7 +172,7 @@ async def test_create_collation():
             return 1
         return -1
 
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.create_collation("reverse", collate_reverse)
 
         cursor = await conn.execute("CREATE TABLE test(x)")
@@ -189,7 +195,7 @@ async def test_set_authorizer():
     ) -> int:
         return anyio_sqlite.SQLITE_DENY
 
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.set_authorizer(authorizer)
 
         with pytest.raises(anyio_sqlite.DatabaseError, match="not authorized"):
@@ -197,7 +203,7 @@ async def test_set_authorizer():
 
 
 async def test_set_progress_handler():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.set_progress_handler(lambda: 1, 1)
 
         with pytest.raises(anyio_sqlite.OperationalError):
@@ -213,7 +219,7 @@ async def test_set_trace_callback():
             self.statements.append(statement)
 
     tracer = Tracer()
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.set_trace_callback(tracer)
         await conn.execute("SELECT 1")
         await conn.execute("SELECT 2")
@@ -227,7 +233,7 @@ async def test_set_trace_callback():
     reason="cannot test loading extensions if python was not compiled with sqlite3 extension support",  # noqa: E501
 )
 async def test_load_extension():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.enable_load_extension(True)
 
         with pytest.raises(
@@ -243,7 +249,7 @@ async def test_load_extension():
 )
 async def test_getlimit_setlimit():
     if sys.version_info >= (3, 11):
-        async with await anyio_sqlite.connect(":memory:") as conn:
+        async with anyio_sqlite.connect(":memory:") as conn:
             await conn.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, 1)
             assert await conn.getlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH) == 1
 
@@ -260,8 +266,8 @@ async def test_getlimit_setlimit():
 async def test_serialize_deserialize():
     if sys.version_info >= (3, 11):
         async with (
-            await anyio_sqlite.connect(":memory:") as conn1,
-            await anyio_sqlite.connect(":memory:") as conn2,
+            anyio_sqlite.connect(":memory:") as conn1,
+            anyio_sqlite.connect(":memory:") as conn2,
         ):
             await conn1.executescript("""
                 CREATE TABLE t1(id INTEGER PRIMARY KEY, k TEXT);
@@ -288,7 +294,7 @@ async def test_serialize_deserialize():
 )
 async def test_getconfig_setconfig():
     if sys.version_info >= (3, 12):
-        async with await anyio_sqlite.connect(":memory:") as conn:
+        async with anyio_sqlite.connect(":memory:") as conn:
             await conn.executescript("CREATE TABLE t1(t TEXT);")
 
             assert await conn.getconfig(anyio_sqlite.SQLITE_DBCONFIG_DQS_DML)
@@ -310,7 +316,7 @@ async def test_getconfig_setconfig():
 )
 async def test_autocommit():
     if sys.version_info >= (3, 12):
-        async with await anyio_sqlite.connect(":memory:") as conn:
+        async with anyio_sqlite.connect(":memory:") as conn:
             assert await conn.autocommit() == anyio_sqlite.LEGACY_TRANSACTION_CONTROL
             await conn.set_autocommit(False)
             assert not await conn.autocommit()
@@ -323,7 +329,7 @@ async def test_autocommit():
 
 
 async def test_iterdump():
-    async with await anyio_sqlite.connect(":memory:") as conn:
+    async with anyio_sqlite.connect(":memory:") as conn:
         await conn.executescript("""
             CREATE TABLE t1(id INTEGER PRIMARY KEY, k TEXT);
             INSERT INTO t1 (k) VALUES ('hello');
@@ -348,7 +354,7 @@ async def test_iterdump():
 )
 async def test_iterdump_with_filter():
     if sys.version_info >= (3, 13):
-        async with await anyio_sqlite.connect(":memory:") as conn:
+        async with anyio_sqlite.connect(":memory:") as conn:
             await conn.executescript("""
                 CREATE TABLE t1(id INTEGER PRIMARY KEY, k TEXT);
                 INSERT INTO t1 (k) VALUES ('hello');
@@ -363,8 +369,8 @@ async def test_iterdump_with_filter():
 
 async def test_backup_anyio_sqlite():
     async with (
-        await anyio_sqlite.connect(":memory:") as conn1,
-        await anyio_sqlite.connect(":memory:") as conn2,
+        anyio_sqlite.connect(":memory:") as conn1,
+        anyio_sqlite.connect(":memory:") as conn2,
     ):
         await conn1.executescript("""
             CREATE TABLE t1(id INTEGER PRIMARY KEY, k TEXT);
@@ -384,7 +390,7 @@ async def test_backup_anyio_sqlite():
 
 
 async def test_backup_sqlite3():
-    async with await anyio_sqlite.connect(":memory:") as conn1:
+    async with anyio_sqlite.connect(":memory:") as conn1:
         with sqlite3.connect(":memory:") as conn2:
             await conn1.executescript("""
                 CREATE TABLE t1(id INTEGER PRIMARY KEY, k TEXT);
@@ -410,7 +416,7 @@ async def test_backup_sqlite3():
 )
 async def test_blobopen():
     if sys.version_info >= (3, 11):
-        async with await anyio_sqlite.connect(":memory:") as conn:
+        async with anyio_sqlite.connect(":memory:") as conn:
             await conn.execute("CREATE TABLE test(blob_col blob)")
             await conn.execute("INSERT INTO test(blob_col) VALUES(zeroblob(13))")
 
@@ -430,12 +436,12 @@ async def test_blobopen():
 async def test_commits_on_context_manager_exit(tmp_path: Path):
     db_path = tmp_path / "test.sqlite3"
 
-    async with await anyio_sqlite.connect(db_path) as conn:
+    async with anyio_sqlite.connect(db_path) as conn:
         await conn.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, k TEXT)")
         await conn.execute("INSERT INTO t1 (k) VALUES ('a'), ('b')")
 
     async with (
-        await anyio_sqlite.connect(db_path) as conn,
+        anyio_sqlite.connect(db_path) as conn,
         await conn.execute("SELECT k FROM t1") as cursor,
     ):
         assert await cursor.fetchall() == [("a",), ("b",)]
@@ -445,7 +451,7 @@ async def test_rollbacks_on_context_manager_exit(tmp_path: Path):
     db_path = tmp_path / "test.sqlite3"
 
     with pytest.raises(RuntimeError, match="hehe"):
-        async with await anyio_sqlite.connect(db_path) as conn:
+        async with anyio_sqlite.connect(db_path) as conn:
             await conn.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, k TEXT)")
             await conn.execute("INSERT INTO t1 (k) VALUES ('a')")
             await conn.commit()
@@ -454,22 +460,22 @@ async def test_rollbacks_on_context_manager_exit(tmp_path: Path):
             raise RuntimeError("hehe")  # noqa: EM101
 
     async with (
-        await anyio_sqlite.connect(db_path) as conn,
+        anyio_sqlite.connect(db_path) as conn,
         await conn.execute("SELECT k FROM t1") as cursor,
     ):
         assert await cursor.fetchall() == [("a",)]
 
 
 async def test_warn_when_dangling_connection():
-    conn = await anyio_sqlite.connect(":memory:")
-
     with pytest.warns(ResourceWarning, match=".*was deleted before being closed.*"):
-        conn.__del__()
+        async with anyio.create_task_group() as tg:
+            conn = await anyio_sqlite.Connection.connect(tg, ":memory:")
+            conn.__del__()
 
 
 async def test_do_not_warn_when_properly_closed():
-    conn = await anyio_sqlite.connect(":memory:")
-    await conn.aclose()
+    async with anyio_sqlite.connect(":memory:") as conn:
+        pass
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")

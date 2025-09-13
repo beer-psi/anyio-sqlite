@@ -1,6 +1,5 @@
 # pyright: reportPrivateUsage=false
 import asyncio
-import contextlib
 import logging
 import math
 import sqlite3
@@ -9,11 +8,11 @@ import warnings
 from collections.abc import (
     AsyncIterator,
     Callable,
-    Generator,
     Iterable,
     Mapping,
     Sequence,
 )
+from contextlib import asynccontextmanager
 from functools import partial
 from os import PathLike
 from queue import SimpleQueue
@@ -26,6 +25,7 @@ from typing import (
     SupportsIndex,
     TypeVar,
     Union,
+    cast,
 )
 
 import anyio
@@ -33,8 +33,13 @@ import anyio.from_thread
 import anyio.lowlevel
 import anyio.to_thread
 from aioresult import Future, TaskFailedException
+from anyio.abc import TaskGroup
 from typing_extensions import ParamSpec, Self
 
+if sys.version_info < (3, 11):
+    from exceptiongroup import BaseExceptionGroup
+
+from ._exceptions import AnyIOSQLiteInternalError
 from ._types import StopRunning
 from .cursor import Cursor
 
@@ -54,20 +59,53 @@ if TYPE_CHECKING:
     )
     from .cursor import SyncCursorT
 
-ArgsT = ParamSpec("ArgsT")
-ReturnT = TypeVar("ReturnT")
-SyncConnectionT = TypeVar("SyncConnectionT", bound=sqlite3.Connection)
+_ArgsT = ParamSpec("_ArgsT")
+_ReturnT = TypeVar("_ReturnT")
+_T = TypeVar("_T")
+_SyncConnectionT = TypeVar("_SyncConnectionT", bound=sqlite3.Connection)
+_SyncConnectionT2 = TypeVar("_SyncConnectionT2", bound=sqlite3.Connection)
 
 logger = logging.getLogger("anyio_sqlite")
+_STOP_RUNNING = StopRunning()
 
 
-class Connection(Generic[SyncConnectionT]):
+def _safe_set_result(future: Future[_T], result: _T):
+    if not future.is_done():
+        future.set_result(result)
+
+
+def _safe_set_exception(future: Future[_T], exception: BaseException):
+    if not future.is_done():
+        future.set_exception(exception)
+
+
+class Connection(Generic[_SyncConnectionT]):
     """
-    An asynchronous SQLite database connection.
-    Create a connection using anyio_sqlite.connect().
+    An asynchronous :class:`sqlite3.Connection` proxy.
+
+    The object supports the asynchronous context management protocol. When leaving
+    the body of the context manager, any open transactions is committed or rolled
+    back before the connection is closed. If this commit fails, the transaction is
+    rolled back.
+
+    A :exc:`ResourceWarning` is emitted if the connection is not closed before it
+    is deleted.
     """
 
-    def __init__(self, connector: Callable[[], SyncConnectionT], iter_chunk_size: int):
+    iter_chunk_size: int
+    """
+    The initial :attr:`Cursor.iter_chunk_size` for
+    :class:`Cursor` objects created from this connection. Changing this
+    attribute does not affect the :attr:`Cursor.iter_chunk_size` of existing
+    cursors belonging to this connection, only new ones.
+    """
+
+    def __init__(
+        self,
+        task_group: TaskGroup,
+        connector: Callable[[], _SyncConnectionT],
+        iter_chunk_size: int,
+    ):
         super().__init__()
 
         self.iter_chunk_size = iter_chunk_size
@@ -75,10 +113,10 @@ class Connection(Generic[SyncConnectionT]):
         self._connected: bool = False
         self._closed: bool = False
 
-        self._connection: Optional[SyncConnectionT] = None
+        self._connection: Optional[_SyncConnectionT] = None
         self._connector = connector
 
-        self._tg = anyio.create_task_group()
+        self._tg = task_group
         self._tx: SimpleQueue[
             Union[tuple[object, Future[Any], Callable[[], Any]], StopRunning]
         ] = SimpleQueue()
@@ -86,8 +124,114 @@ class Connection(Generic[SyncConnectionT]):
             Optional[str]
         ](math.inf)
 
+    if sys.version_info >= (3, 12):
+
+        @classmethod
+        async def connect(
+            cls,
+            task_group: TaskGroup,
+            database: str | bytes | PathLike[str] | PathLike[bytes],
+            # this is the wait timeout for when the database is locked
+            timeout: float = 5.0,  # noqa: ASYNC109
+            detect_types: int = 0,
+            isolation_level: Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"]
+            | None = "DEFERRED",
+            factory: type[_SyncConnectionT2] = sqlite3.Connection,
+            cached_statements: int = 128,
+            uri: bool = False,
+            autocommit: bool = sqlite3.LEGACY_TRANSACTION_CONTROL,  # pyright: ignore[reportArgumentType]
+            iter_chunk_size: int = 128,
+        ) -> "Connection[_SyncConnectionT2]":
+            """
+            Opens an asynchronous SQLite connection.
+
+            This method is used to specify a custom task group to run the worker thread
+            in. The caller is responsible for closing the connection.
+
+            If you don't need a custom task group, you should probably
+            use :func:`connect` instead.
+
+            Aside from `task_group`, other parameters have the same meaning as their
+            `sqlite3` counterparts and are passed through to :func:`sqlite3.connect`.
+
+            :param task_group: An AnyIO task group to run the worker thread in.
+            :param int iter_chunk_size: The initial :attr:`Cursor.iter_chunk_size` for
+                :class:`Cursor` objects created from this connection. Changing this
+                attribute does not affect the :attr:`Cursor.iter_chunk_size` of existing
+                cursors belonging to this connection, only new ones.
+            """
+
+            def connector():
+                return sqlite3.connect(
+                    database,
+                    timeout=timeout,
+                    detect_types=detect_types,
+                    isolation_level=isolation_level,
+                    factory=factory,
+                    cached_statements=cached_statements,
+                    uri=uri,
+                    autocommit=autocommit,
+                )
+
+            conn = cls(task_group, connector, iter_chunk_size)  # pyright: ignore[reportArgumentType]
+
+            await conn._actually_connect()
+            return conn  # pyright: ignore[reportReturnType]
+
+    else:
+
+        @classmethod
+        async def connect(
+            cls,
+            task_group: TaskGroup,
+            database: Union[str, bytes, PathLike[str], PathLike[bytes]],
+            # this is the wait timeout for when the database is locked
+            timeout: float = 5.0,  # noqa: ASYNC109
+            detect_types: int = 0,
+            isolation_level: Optional["IsolationLevel"] = "DEFERRED",
+            factory: type[_SyncConnectionT2] = sqlite3.Connection,
+            cached_statements: int = 128,
+            uri: bool = False,
+            iter_chunk_size: int = 128,
+        ) -> "Connection[_SyncConnectionT2]":
+            """
+            Opens an asynchronous SQLite connection.
+
+            This method is used to specify a custom task group to run the worker thread
+            in. The caller is responsible for closing the connection.
+
+            If you don't need a custom task group, you should probably use
+            :func:`connect` instead.
+
+            Aside from `task_group` and `iter_chunk_size`, other parameters have the
+            same meaning as their `sqlite3` counterparts and are passed through to
+            :func:`sqlite3.connect`.
+
+            :param task_group: An AnyIO task group to run the worker thread in.
+            :param int iter_chunk_size: The initial :attr:`Cursor.iter_chunk_size` for
+                :class:`Cursor` objects created from this connection. Changing this
+                attribute does not affect the :attr:`Cursor.iter_chunk_size` of existing
+                cursors belonging to this connection, only new ones.
+            """
+
+            def connector():
+                return sqlite3.connect(
+                    database,
+                    timeout=timeout,
+                    detect_types=detect_types,
+                    isolation_level=isolation_level,
+                    factory=factory,
+                    cached_statements=cached_statements,
+                    uri=uri,
+                )
+
+            conn = cls(task_group, connector, iter_chunk_size)  # pyright: ignore[reportArgumentType]
+
+            await conn._actually_connect()
+            return conn  # pyright: ignore[reportReturnType]
+
     @property
-    def connection(self) -> SyncConnectionT:
+    def connection(self) -> _SyncConnectionT:
         """
         Returns the underlying SQLite connection. Raises sqlite3.ProgrammingError
         if there are none.
@@ -104,6 +248,9 @@ class Connection(Generic[SyncConnectionT]):
             request = self._tx.get()
 
             if isinstance(request, StopRunning):
+                if self._connection is not None:
+                    self._connection.close()
+                    self._connection = None
                 break
 
             token, future, fn = request
@@ -119,9 +266,9 @@ class Connection(Generic[SyncConnectionT]):
                 try:
                     result = fn()
                 except BaseException as e:  # noqa: BLE001
-                    run_sync_soon_from_thread(future.set_exception, e)
+                    run_sync_soon_from_thread(_safe_set_exception, future, e)
                 else:
-                    run_sync_soon_from_thread(future.set_result, result)
+                    run_sync_soon_from_thread(_safe_set_result, future, result)
             except RuntimeError:  # the event loop got closed
                 break
 
@@ -132,7 +279,10 @@ class Connection(Generic[SyncConnectionT]):
             msg = "Cannot operate on a closed database."
             raise sqlite3.ProgrammingError(msg)
 
-        return await self
+        if not self._connected:
+            await self._actually_connect()
+
+        return self
 
     async def __aexit__(
         self,
@@ -140,43 +290,48 @@ class Connection(Generic[SyncConnectionT]):
         exc_value: Optional[BaseException],
         traceback: Optional["TracebackType"],
     ):
-        if self.in_transaction:
-            if exc_type:
+        if exc_type is None and exc_value is None and traceback is None:
+            try:
+                await self.commit()
+            except Exception as e:
+                # commit failed, try to rollback in order to unlock the database
                 try:
                     await self.rollback()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("error ignored in rollback on %r", self, exc_info=e)
-            else:
-                await self.commit()
+                except Exception as e2:
+                    # rollback also failed, chain the exceptions
+                    raise e2 from e
+
+                # rollback succeeded, raise commit error
+                raise
+        else:
+            try:
+                await self.rollback()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("error ignored in rollback on %r", self, exc_info=e)
 
         await self.aclose()
 
-    async def _connect(self):
+    async def _actually_connect(self):
         if self._connected:
             return self
 
-        tg = await self._tg.__aenter__()
-        tg.start_soon(anyio.to_thread.run_sync, self._worker_thread)
+        self._tg.start_soon(anyio.to_thread.run_sync, self._worker_thread)
 
         if self._connection is None:
             try:
                 self._connection = await self._to_thread(self._connector)
             except BaseException:
                 await self._stop_running()
-                self._connection = None
                 raise
 
         self._connected = True
         return self
 
     async def _stop_running(self):
-        self._closed = True
-
-        self._tx.put_nowait(StopRunning())
+        self._tx.put_nowait(_STOP_RUNNING)
         await self._iterdump_send.aclose()
         await self._iterdump_recv.aclose()
-
-        await self._tg.__aexit__(None, None, None)
+        self._closed = True
 
     async def aclose(self):
         """Closes the connection."""
@@ -184,25 +339,21 @@ class Connection(Generic[SyncConnectionT]):
         if self._connection is None or self._closed:
             return
 
-        try:
-            await self._to_thread(self._connection.close)
-        finally:
-            await self._stop_running()
-            self._connection = None
+        await self._stop_running()
 
     async def _to_thread(
         self,
-        func: Callable[ArgsT, ReturnT],
-        *args: ArgsT.args,
-        **kwargs: ArgsT.kwargs,
-    ) -> ReturnT:
+        func: Callable[_ArgsT, _ReturnT],
+        *args: _ArgsT.args,
+        **kwargs: _ArgsT.kwargs,
+    ) -> _ReturnT:
         await anyio.lowlevel.checkpoint_if_cancelled()
 
         if self._closed:
             msg = "Cannot operate on a closed database."
             raise sqlite3.ProgrammingError(msg)
 
-        future = Future[ReturnT]()
+        future = Future[_ReturnT]()
 
         self._tx.put_nowait(
             (anyio.lowlevel.current_token(), future, partial(func, *args, **kwargs))
@@ -218,12 +369,20 @@ class Connection(Generic[SyncConnectionT]):
             raise inner from None  # pyright: ignore[reportGeneralTypeIssues]
 
     async def cursor(
-        self, factory: type["SyncCursorT"] = sqlite3.Cursor
-    ) -> Cursor[SyncConnectionT, "SyncCursorT"]:
+        self,
+        factory: Callable[[_SyncConnectionT], "SyncCursorT"] = sqlite3.Cursor,
+    ) -> Cursor[_SyncConnectionT, "SyncCursorT"]:
         """
-        Create and return a Cursor asynchronous proxy. The method accepts an optional
-        parameter `factory`, for customizing the underlying `sqlite3` cursor class.
+        Create and return a :class:`Cursor` asynchronous proxy.
+
+        :param factory: The underlying :mod:`sqlite3` cursor class.
         """
+        # this really should be (_SyncConnectionT) -> SyncCursorT because you
+        # can override the connection factory, but pyright seems really unhappy
+        # if I don't cast this.
+        if TYPE_CHECKING:
+            factory = cast(Callable[[sqlite3.Connection], "SyncCursorT"], factory)
+
         sync_cursor = await self._to_thread(self.connection.cursor, factory)
 
         return Cursor(self, sync_cursor)
@@ -240,6 +399,11 @@ class Connection(Generic[SyncConnectionT]):
             readonly: bool = False,
             name: str = "main",
         ):
+            """
+            Open a :class:`Blob` asynchronous proxy to an SQLite BLOB.
+
+            Parameters are inherited from :meth:`sqlite3.Connection.blobopen`.
+            """
             sync_blob = await self._to_thread(
                 self.connection.blobopen,
                 table,
@@ -259,14 +423,14 @@ class Connection(Generic[SyncConnectionT]):
 
     async def execute(
         self, sql: str, parameters: Union[Sequence[Any], Mapping[str, Any]] = (), /
-    ) -> Cursor[SyncConnectionT, sqlite3.Cursor]:
+    ) -> Cursor[_SyncConnectionT, sqlite3.Cursor]:
         sync_cursor = await self._to_thread(self.connection.execute, sql, parameters)
 
         return Cursor(self, sync_cursor)
 
     async def executemany(
         self, sql: str, parameters: Iterable[Union[Sequence[Any], Mapping[str, Any]]], /
-    ) -> Cursor[SyncConnectionT, sqlite3.Cursor]:
+    ) -> Cursor[_SyncConnectionT, sqlite3.Cursor]:
         sync_cursor = await self._to_thread(
             self.connection.executemany, sql, parameters
         )
@@ -275,7 +439,7 @@ class Connection(Generic[SyncConnectionT]):
 
     async def executescript(
         self, sql_script: str, /
-    ) -> Cursor[SyncConnectionT, sqlite3.Cursor]:
+    ) -> Cursor[_SyncConnectionT, sqlite3.Cursor]:
         sync_cursor = await self._to_thread(self.connection.executescript, sql_script)
 
         return Cursor(self, sync_cursor)
@@ -459,7 +623,7 @@ class Connection(Generic[SyncConnectionT]):
 
     async def backup(
         self,
-        target: Union["Connection[SyncConnectionT]", sqlite3.Connection],
+        target: Union["Connection[_SyncConnectionT]", sqlite3.Connection],
         *,
         pages: int = -1,
         progress: Optional[Callable[[int, int, int], Any]] = None,
@@ -545,9 +709,6 @@ class Connection(Generic[SyncConnectionT]):
     def total_changes(self):
         return self.connection.total_changes
 
-    def __await__(self) -> Generator[Any, None, "Self"]:
-        return self._connect().__await__()
-
     def __del__(self):
         if self._connection is None or self._closed:
             return
@@ -562,73 +723,121 @@ class Connection(Generic[SyncConnectionT]):
             stacklevel=1,
         )
 
-        # even if the event loop is not alive, at least signal the worker thread to shut
-        # down gracefully
-        self._tx.put_nowait(StopRunning())
-
-        # see if we can close it for the user, e.g. if garbage collected while the loop
-        # is still alive
-        with contextlib.suppress(RuntimeError):
-            token = anyio.lowlevel.current_token()
-
-            if isinstance(token, asyncio.AbstractEventLoop):
-                asyncio.run_coroutine_threadsafe(self.aclose(), token)
-            elif token.__class__.__name__ == "TrioToken":
-                import trio.from_thread
-
-                trio.from_thread.run(self.aclose, trio_token=token)  # pyright: ignore[reportArgumentType]
+        # attempt to stop the worker thread, which will also close the underlying
+        # sqlite3 connection. unfortunately the memory object streams will be left
+        # dangling
+        self._tx.put_nowait(_STOP_RUNNING)
 
 
 if sys.version_info >= (3, 12):
 
-    def connect(
+    @asynccontextmanager
+    async def connect(
         database: str | bytes | PathLike[str] | PathLike[bytes],
-        timeout: float = 5.0,
+        # this is the wait timeout for when the database is locked
+        timeout: float = 5.0,  # noqa: ASYNC109
         detect_types: int = 0,
-        isolation_level: Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"]
-        | None = "DEFERRED",
-        factory: type[SyncConnectionT] = sqlite3.Connection,
+        isolation_level: "IsolationLevel | None" = "DEFERRED",
+        factory: type[_SyncConnectionT] = sqlite3.Connection,
         cached_statements: int = 128,
         uri: bool = False,
         autocommit: bool = sqlite3.LEGACY_TRANSACTION_CONTROL,  # pyright: ignore[reportArgumentType]
-        iter_chunk_size: int = 64,
-    ) -> Connection[SyncConnectionT]:
-        def connector():
-            return sqlite3.connect(
-                database,
-                timeout=timeout,
-                detect_types=detect_types,
-                isolation_level=isolation_level,
-                factory=factory,
-                cached_statements=cached_statements,
-                uri=uri,
-                autocommit=autocommit,
-            )
+        iter_chunk_size: int = 128,
+    ) -> Connection[_SyncConnectionT]:
+        """
+        Opens an asynchronous SQLite connection.
 
-        return Connection(connector, iter_chunk_size)
+        This async context manager connects to the database when entering the context
+        manager and closes the connection when exiting. It yields a :class:`Connection`
+        instance.
+
+        Aside from `iter_chunk_size`, parameters have the same meaning as their
+        :mod:`sqlite3` counterparts and are passed through to :func:`sqlite3.connect`.
+
+        :param int iter_chunk_size: The initial :attr:`Cursor.iter_chunk_size` for
+            :class:`Cursor` objects created from this connection. Changing this
+            attribute does not affect the :attr:`Cursor.iter_chunk_size` of existing
+            cursors belonging to this connection, only new ones.
+        """
+
+        try:
+            async with (
+                anyio.create_task_group() as tg,
+                await Connection.connect(
+                    tg,
+                    database,
+                    timeout,
+                    detect_types,
+                    isolation_level,
+                    factory,
+                    cached_statements,
+                    uri,
+                    autocommit,
+                    iter_chunk_size,
+                ) as conn,
+            ):
+                yield conn
+        except BaseExceptionGroup as excgroup:
+            if len(excgroup.exceptions) == 1:
+                raise excgroup.exceptions[0] from None
+
+            msg = (
+                "anyio-sqlite is not expected to raise multiple exceptions. "
+                "Please report this as a bug to https://github.com/beer-psi/anyio-sqlite"
+            )
+            raise AnyIOSQLiteInternalError(msg) from excgroup
 else:
 
-    def connect(
+    @asynccontextmanager
+    async def connect(
         database: Union[str, bytes, PathLike[str], PathLike[bytes]],
-        timeout: float = 5.0,
+        # this is the wait timeout for when the database is locked
+        timeout: float = 5.0,  # noqa: ASYNC109
         detect_types: int = 0,
-        isolation_level: Optional[
-            Literal["DEFERRED", "EXCLUSIVE", "IMMEDIATE"]
-        ] = "DEFERRED",
-        factory: type[SyncConnectionT] = sqlite3.Connection,
+        isolation_level: Optional["IsolationLevel"] = "DEFERRED",
+        factory: type[_SyncConnectionT] = sqlite3.Connection,
         cached_statements: int = 128,
         uri: bool = False,
-        iter_chunk_size: int = 64,
-    ) -> Connection[SyncConnectionT]:
-        def connector():
-            return sqlite3.connect(
-                database,
-                timeout=timeout,
-                detect_types=detect_types,
-                isolation_level=isolation_level,
-                factory=factory,
-                cached_statements=cached_statements,
-                uri=uri,
-            )
+        iter_chunk_size: int = 128,
+    ):
+        """
+        Opens an asynchronous SQLite connection.
 
-        return Connection(connector, iter_chunk_size)
+        This async context manager connects to the database when entering the context
+        manager and closes the connection when exiting. It yields a :class:`Connection`
+        instance.
+
+        Aside from `iter_chunk_size`, parameters have the same meaning as their
+        :mod:`sqlite3` counterparts and are passed through to :func:`sqlite3.connect`.
+
+        :param int iter_chunk_size: The initial :attr:`Cursor.iter_chunk_size` for
+            :class:`Cursor` objects created from this connection. Changing this
+            attribute does not affect the :attr:`Cursor.iter_chunk_size` of existing
+            cursors belonging to this connection, only new ones.
+        """
+
+        try:
+            async with (
+                anyio.create_task_group() as tg,
+                await Connection.connect(
+                    tg,
+                    database,
+                    timeout,
+                    detect_types,
+                    isolation_level,
+                    factory,
+                    cached_statements,
+                    uri,
+                    iter_chunk_size,
+                ) as conn,
+            ):
+                yield conn
+        except BaseExceptionGroup as excgroup:
+            if len(excgroup.exceptions) == 1:
+                raise excgroup.exceptions[0] from None
+
+            msg = (
+                "anyio-sqlite is not expected to raise multiple exceptions. "
+                "Please report this as a bug to https://github.com/beer-psi/anyio-sqlite"
+            )
+            raise AnyIOSQLiteInternalError(msg) from excgroup

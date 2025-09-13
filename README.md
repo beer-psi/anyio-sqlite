@@ -27,7 +27,7 @@ import anyio
 import anyio_sqlite
 
 async def main():
-    async with await anyio_sqlite.connect("example.sqlite3") as con:
+    async with anyio_sqlite.connect("example.sqlite3") as con:
         async with await con.cursor() as cur:
             await cur.execute("CREATE TABLE movie(title, year, score)")
             await cur.execute("""
@@ -44,32 +44,33 @@ async def main():
 anyio.run(main)
 ```
 
-It can also be used procedurally:
+It can also be used mostly procedurally, if you provide an external task group:
 
 ```python
 import anyio
 import anyio_sqlite
 
 async def main():
-    con = await anyio_sqlite.connect("example.sqlite3")
-    cur = await con.cursor()
+    async with anyio.create_task_group() as tg:
+        con = await anyio_sqlite.Connection.connect(tg, "example.sqlite3")
+        cur = await con.cursor()
 
-    await cur.execute("CREATE TABLE movie(title, year, score)")
-    await cur.execute("""
-        INSERT INTO movie VALUES
-            ('Monty Python and the Holy Grail', 1975, 8.2),
-            ('And Now for Something Completely Different', 1971, 7.5)
-    """)
-    await con.commit()
-    await cur.aclose()
+        await cur.execute("CREATE TABLE movie(title, year, score)")
+        await cur.execute("""
+            INSERT INTO movie VALUES
+                ('Monty Python and the Holy Grail', 1975, 8.2),
+                ('And Now for Something Completely Different', 1971, 7.5)
+        """)
+        await con.commit()
+        await cur.aclose()
 
-    cur = await con.execute("SELECT score FROM movie")
+        cur = await con.execute("SELECT score FROM movie")
 
-    async for row in cur:
-        ...
+        async for row in cur:
+            ...
 
-    await cur.aclose()
-    await con.aclose()
+        await cur.aclose()
+        await con.aclose()
 
 anyio.run(main)
 ```
