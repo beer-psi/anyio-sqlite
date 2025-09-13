@@ -743,7 +743,7 @@ if sys.version_info >= (3, 12):
         uri: bool = False,
         autocommit: bool = sqlite3.LEGACY_TRANSACTION_CONTROL,  # pyright: ignore[reportArgumentType]
         iter_chunk_size: int = 128,
-    ) -> Connection[_SyncConnectionT]:
+    ):
         """
         Opens an asynchronous SQLite connection.
 
