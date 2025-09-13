@@ -1,9 +1,11 @@
 # pyright: reportPrivateUsage=false
 import asyncio
+import contextlib
 import logging
 import math
 import sqlite3
 import sys
+import warnings
 from collections.abc import (
     AsyncIterator,
     Callable,
@@ -545,6 +547,32 @@ class Connection(Generic[SyncConnectionT]):
 
     def __await__(self) -> Generator[Any, None, "Self"]:
         return self._connect().__await__()
+
+    def __del__(self):
+        if self._connection is None or self._closed:
+            return
+
+        warnings.warn(
+            (
+                f"{self!r} was deleted before being closed. "
+                "Please use 'async with' or '.aclose()' to close the connection "
+                "properly."
+            ),
+            ResourceWarning,
+            stacklevel=1,
+        )
+
+        # see if we can close it for the user, e.g. if garbage collected while the loop
+        # is still alive
+        with contextlib.suppress(RuntimeError):
+            token = anyio.lowlevel.current_token()
+
+            if isinstance(token, asyncio.AbstractEventLoop):
+                asyncio.run_coroutine_threadsafe(self.aclose(), token)
+            elif token.__class__.__name__ == "TrioToken":
+                import trio.from_thread
+
+                trio.from_thread.run(self.aclose, trio_token=token)  # pyright: ignore[reportArgumentType]
 
 
 if sys.version_info >= (3, 12):

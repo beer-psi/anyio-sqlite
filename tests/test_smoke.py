@@ -1,5 +1,6 @@
 import sqlite3
 import sys
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -457,3 +458,19 @@ async def test_rollbacks_on_context_manager_exit(tmp_path: Path):
         await conn.execute("SELECT k FROM t1") as cursor,
     ):
         assert await cursor.fetchall() == [("a",)]
+
+
+async def test_warn_when_dangling_connection():
+    conn = await anyio_sqlite.connect(":memory:")
+
+    with pytest.warns(ResourceWarning, match=".*was deleted before being closed.*"):
+        conn.__del__()
+
+
+async def test_do_not_warn_when_properly_closed():
+    conn = await anyio_sqlite.connect(":memory:")
+    await conn.aclose()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        conn.__del__()
