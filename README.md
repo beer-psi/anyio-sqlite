@@ -74,6 +74,12 @@ async def main():
 anyio.run(main)
 ```
 
+> [!WARNING]
+> Since each connection spawns a long-running worker in another thread,
+> the connection must be closed after you're done using it! Otherwise,
+> the process will hang indefinitely waiting for the worker thread
+> to finish.
+
 ## License
 
 Licensed under either of
