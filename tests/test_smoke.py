@@ -424,3 +424,36 @@ async def test_blobopen():
                 await blob.seek(6)
                 assert await blob.tell() == 6
                 assert await blob.read(5) == b"world"
+
+
+async def test_commits_on_context_manager_exit(tmp_path: Path):
+    db_path = tmp_path / "test.sqlite3"
+
+    async with await anyio_sqlite.connect(db_path) as conn:
+        await conn.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, k TEXT)")
+        await conn.execute("INSERT INTO t1 (k) VALUES ('a'), ('b')")
+
+    async with (
+        await anyio_sqlite.connect(db_path) as conn,
+        await conn.execute("SELECT k FROM t1") as cursor,
+    ):
+        assert await cursor.fetchall() == [("a",), ("b",)]
+
+
+async def test_rollbacks_on_context_manager_exit(tmp_path: Path):
+    db_path = tmp_path / "test.sqlite3"
+
+    with pytest.raises(RuntimeError, match="hehe"):
+        async with await anyio_sqlite.connect(db_path) as conn:
+            await conn.execute("CREATE TABLE t1(id INTEGER PRIMARY KEY, k TEXT)")
+            await conn.execute("INSERT INTO t1 (k) VALUES ('a')")
+            await conn.commit()
+
+            await conn.execute("INSERT INTO t1 (k) VALUES ('b')")
+            raise RuntimeError("hehe")  # noqa: EM101
+
+    async with (
+        await anyio_sqlite.connect(db_path) as conn,
+        await conn.execute("SELECT k FROM t1") as cursor,
+    ):
+        assert await cursor.fetchall() == [("a",)]

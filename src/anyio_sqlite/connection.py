@@ -1,5 +1,6 @@
 # pyright: reportPrivateUsage=false
 import asyncio
+import logging
 import math
 import sqlite3
 import sys
@@ -54,6 +55,8 @@ if TYPE_CHECKING:
 ArgsT = ParamSpec("ArgsT")
 ReturnT = TypeVar("ReturnT")
 SyncConnectionT = TypeVar("SyncConnectionT", bound=sqlite3.Connection)
+
+logger = logging.getLogger("anyio_sqlite")
 
 
 class Connection(Generic[SyncConnectionT]):
@@ -135,6 +138,15 @@ class Connection(Generic[SyncConnectionT]):
         exc_value: Optional[BaseException],
         traceback: Optional["TracebackType"],
     ):
+        if self.in_transaction:
+            if exc_type:
+                try:
+                    await self.rollback()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("error ignored in rollback on %r", self, exc_info=e)
+            else:
+                await self.commit()
+
         await self.aclose()
 
     async def _connect(self):
@@ -167,7 +179,7 @@ class Connection(Generic[SyncConnectionT]):
     async def aclose(self):
         """Closes the connection."""
 
-        if self._connection is None:
+        if self._connection is None or self._closed:
             return
 
         try:
