@@ -29,6 +29,8 @@ if sys.version_info >= (3, 11):
         is closed after use.
         """
 
+        __slots__ = ("_blob", "_connection")
+
         def __init__(
             self, connection: "Connection[SyncConnectionT]", blob: sqlite3.Blob
         ):

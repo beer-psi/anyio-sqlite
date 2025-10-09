@@ -19,7 +19,3 @@ class WindowAggregateClass(Protocol):
 
     def value(self) -> SqliteData: ...
     def finalize(self) -> SqliteData: ...
-
-
-class StopRunning:
-    pass

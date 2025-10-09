@@ -1,9 +1,10 @@
 import sqlite3
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Generic, Optional, TypeVar, Union
+from typing import TYPE_CHECKING, Generic, TypeVar
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
     from types import TracebackType
+    from typing import Any, Optional, Union
 
     from typing_extensions import Self
 
@@ -25,6 +26,8 @@ class Cursor(Generic[SyncConnectionT, SyncCursorT]):
     as an asynchronous iterator. The default set by :attr:`Connection.iter_chunk_size`
     is 128, which provides a good balance between performance and memory usage.
     """
+
+    __slots__ = ("_connection", "_cursor", "iter_chunk_size")
 
     def __init__(
         self,
@@ -49,13 +52,13 @@ class Cursor(Generic[SyncConnectionT, SyncCursorT]):
 
     async def __aexit__(
         self,
-        exc_type: Optional[type[BaseException]],
-        exc_value: Optional[BaseException],
-        traceback: Optional["TracebackType"],
+        exc_type: "Optional[type[BaseException]]",
+        exc_value: "Optional[BaseException]",
+        traceback: "Optional[TracebackType]",
     ):
         await self.aclose()
 
-    def __aiter__(self) -> AsyncIterator[Any]:
+    def __aiter__(self) -> "AsyncIterator[Any]":
         return self._iterator()
 
     async def _iterator(self):
@@ -69,13 +72,16 @@ class Cursor(Generic[SyncConnectionT, SyncCursorT]):
                 yield row
 
     async def execute(
-        self, sql: str, parameters: Union[Sequence[Any], Mapping[str, Any]] = (), /
+        self, sql: str, parameters: "Union[Sequence[Any], Mapping[str, Any]]" = (), /
     ):
         await self._connection._to_thread(self._cursor.execute, sql, parameters)
         return self
 
     async def executemany(
-        self, sql: str, parameters: Iterable[Union[Sequence[Any], Mapping[str, Any]]], /
+        self,
+        sql: str,
+        parameters: "Iterable[Union[Sequence[Any], Mapping[str, Any]]]",
+        /,
     ):
         await self._connection._to_thread(self._cursor.executemany, sql, parameters)
         return self
@@ -84,16 +90,16 @@ class Cursor(Generic[SyncConnectionT, SyncCursorT]):
         await self._connection._to_thread(self._cursor.executescript, sql_script)
         return self
 
-    async def fetchone(self) -> Any:
+    async def fetchone(self) -> "Any":
         return await self._connection._to_thread(self._cursor.fetchone)
 
-    async def fetchmany(self, size: Optional[int] = None) -> list[Any]:
+    async def fetchmany(self, size: "Optional[int]" = None) -> list["Any"]:
         if size is None:
             size = self.arraysize
 
         return await self._connection._to_thread(self._cursor.fetchmany, size)
 
-    async def fetchall(self) -> list[Any]:
+    async def fetchall(self) -> list["Any"]:
         return await self._connection._to_thread(self._cursor.fetchall)
 
     async def aclose(self):
@@ -139,6 +145,6 @@ class Cursor(Generic[SyncConnectionT, SyncCursorT]):
 
     @row_factory.setter
     def row_factory(
-        self, value: Optional[Callable[[sqlite3.Cursor, sqlite3.Row], object]]
+        self, value: "Optional[Callable[[sqlite3.Cursor, sqlite3.Row], object]]"
     ):
         self._cursor.row_factory = value

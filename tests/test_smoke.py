@@ -45,7 +45,7 @@ async def test_connection_properly_closes_on_error():
             async with connection:
                 pass
 
-        assert not connection._connected
+        assert connection._connection is None
 
 
 async def test_closed_connection():
